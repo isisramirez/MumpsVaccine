@@ -1,0 +1,180 @@
+---
+title: "Cases of Mumps In New York City"
+author: "Isis Ramirez"
+date: "4/16/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(astsa)
+library(xts)
+library(ggplot2)
+library(gridExtra)
+library(forecast)
+library(knitr)
+library(kableExtra)
+library(changepoint)
+require(quantmod)
+require(timeSeries)
+```
+
+## Background and Key Questions
+
+Mumps is a highly contagious viral infection that presents itself with fever, muscle aches, weakness, and headaches. There is no cure, but a vaccine was introduced in 1967 that reduces the chances of contracting the disease. 
+
+Since mumps can affect the health of various individuals, it is worthwhile to explore any patterns presented in mumps outbreaks. These revelations can help us learn on how to protect ourselves more effectively. 
+
+We will be looking at a time series dataset on the monthly count of mumps cases in New York City from 1928-1972.
+
+The following questions will be addressed:   
+
+- Is there a temporal pattern to mumps occurrences?
+   
+- Is the vaccine effective at preventing mumps?
+
+In order to answer these questions, we will focus on exploring the seasonality of the data and developing a model using trigonometric functions and exogenous variables. 
+
+## Data: Definition, Acquisition and Exploration
+
+Monthly data of reported cases of mumps in New York City from 1928-1972 was acquired from the Time Series Data Library.   
+
+Below is a time series plot of the data, which shows decreasing numbers in the later years and periodic oscillations across the entire series. These oscillations are also evident in the seasonal component of the decomposed data.   
+
+```{r}
+## Load Data & Format ##
+mumps <- read.csv("mumps_data.csv", header = TRUE)
+ts.mumps <- ts(mumps[,2], start=c(1928,1), end=c(1972,6), frequency=12)
+
+## Plot Data & Decomposition
+autoplot(ts.mumps, ylab="Number of mumps Cases", 
+         main="Reported Mumps Cases in New York City")
+
+## Decompose
+decompose(ts.mumps) %>% autoplot()
+```
+
+## Seasonality
+
+A seasonal plot reveals a yearly reocurring pattern. The number of cases reported are at the highest during late winter and spring months.    
+
+```{r}
+seasonplot(ts.mumps, year.labels=TRUE, col= 1:16, ylab="Number of Mumps Cases")
+```
+
+Even in current times, this temporal pattern of higher incidences in later winter and early spring is confirmed by the CDC. This knowledge is valuable, especially for individuals that may not be eligible to get vaccinated, such as those with weakened immune systems, pregnant women, or those with history of seizures. With this information, people can now be more cautious and vigilant during months of higher occurences of mumps.    
+
+```{r}
+ggsubseriesplot(ts.mumps, year.labels=TRUE, col= 1:16, ylab="Number of Mumps Cases")
+```
+
+The subseries plot shows a decrease in reported cases of mumps across all months in the later years. Further investigation  will be done on whether this decrease is a result of a vaccine being introduced to the public in early 1967.  
+
+## Finding a Model   
+
+The ACF shows the seasonal component. We previously saw an annual pattern indicating a period of 12 months. We also see a sinusoidal in the ACF, but we do not see any decay. A seasonal arima model will be using with exogenous variables. Due to the periodic behaviour seen in the ACF, trigonometric functions will be used to estimate coefficients.    
+
+```{r}
+invisible(acf2(ts.mumps))
+```
+
+In order to determine the effect of the vaccine, we will use the following formulas to detect a change in amplitude. Indicators are used to determine whether an incidence occurred before or after the vaccine was introduced. A pre-vaccine indicator ($I_{pre}$) value of 1 implies an incidence that occurred before the vaccine and a pre-vaccine indicator value of 0 implies an incidence that did not occur before the vaccine; the post-vaccine indicator ($I_{post}$) works similarly. Note that the A and U variables correspond to incidences occuring before the vaccine while the B and V variables correspond to incidences occurring after the vaccine was introduced.   
+
+$$x_{t}=A[I_{pre}cos(\frac{2\pi t}{12}+\phi_{pre})]+B[I_{post}cos(\frac{2\pi t}{12}+\phi_{post})] $$ 
+The exogenous matrix will consists of the terms seen in the trignometric function below, which is a transformation of the previous function:   
+
+$$x_{t}=[U_{1}(I_{pre}cos(\frac{2\pi t}{12}))+U_{2}(I_{pre}sin(\frac{2\pi t}{12}))]+[V_{1}(I_{post}cos(\frac{2\pi t}{12}))+V_{2}(I_{post}sin(\frac{2\pi t}{12}))]$$ 
+Note the following:
+$$U_{1} = A cos(\phi_{pre}) $$
+$$U_{2} = - A sin(\phi_{pre}) $$
+$$V_{1} = B cos(\phi_{post}) $$
+$$V_{2} = - B sin(\phi_{post})$$
+
+## Fitting a Model  
+
+Several SARIMA models with exogenous variables were used to fit the data. Below are the results for a SARIMA(2,0,0)x(1,0,1)[12]. SARIMA models of higher orders returned similar results.  
+
+```{r}
+n <- length(ts.mumps)
+t <- 1:length(ts.mumps)
+w <- 1/12
+
+PreVac <- as.numeric(time(ts.mumps)<1967)
+PostVac <- as.numeric(time(ts.mumps)>1967)
+
+cos.D <- cos(2*pi*w*t) 
+sin.D <- sin(2*pi*w*t) 
+Dmatrix <- cbind(cos.D*PreVac, sin.D*PreVac, cos.D*PostVac, sin.D*PostVac)
+
+fit <- invisible(astsa::sarima(ts.mumps, p=2,d=0,q=0, P=1, Q=1, S=12, 
+                        xreg=Dmatrix, no.constant=FALSE,details=F))
+ttable <- round(fit$ttable[,-3],2)
+rowNames <- c("ar1","ar2","sar1","sma1","intercept","U1","U2","V3","V4") 
+rownames(ttable) <- rowNames
+kable(ttable, caption="SARIMA(2,0,0)x(1,0,1)[12] Parameter Estimates", format = 'markdown')
+```
+
+
+After extracting the appropriate coefficients, the amplitudes for pre-vaccination and post-vaccination periods were calculated. We see that the post-vaccine amplitude is smaller than the pre-vaccine amplitude. This suggests that the vaccine did indeed help reduce the numbers of mumps cases.
+
+
+```{r}
+B1.PreV <- fit$ttable[6,1]
+B2.PreV <- fit$ttable[7,1]
+B1.PostV <- fit$ttable[8,1]
+B2.PostV <- fit$ttable[9,1]
+
+amp1 <- sqrt(B1.PreV^2+B2.PreV^2)
+amp2 <- sqrt(B1.PostV^2+B2.PostV^2)
+
+amplitudes <- as.data.frame(c(round(amp1,2), round(amp2,2)))
+rowNames <- c("Pre-Vaccine (A)", "Post-Vaccine (B)")
+rownames(amplitudes) <- rowNames
+colNames <- c("Amplitudes")
+colnames(amplitudes) <- colNames
+kable(amplitudes, caption="Amplitudes Pre/Post Vaccine", format = 'markdown')
+```
+
+## Change in Mean      
+
+The effect of the vaccine was further validated by using the changepoint package to detect a change in mean. Below we see that there is a change in mean in the data beginning in July 1966, which is before the vaccine was introduced to the public. We previously saw a seasonal pattern of decreasing occurrences in the summer, which may have affected the detection of the changing point time. 
+
+```{r}
+mvalue <-  cpt.mean(ts.mumps)
+changePoint <- cpts(mvalue)
+changeDate <- as.yearmon(time(ts.mumps))[changePoint]
+
+m1 <- round(mvalue@param.est$mean[1],0)
+m2 <- round(mvalue@param.est$mean[2],0)
+
+plot(mvalue, ylab="Number of Mumps Cases")
+abline(v=time(ts.mumps)[changePoint], lty=2)
+text(time(ts.mumps)[changePoint]+1, 750, labels = changeDate,  srt=45, col="blue")
+text(1928, m1+60, labels = m1, col="blue")
+text(1973, m2+60, labels = m2, col="blue")
+```
+Interestingly, in the months of November and December of 1966, a sample of people were vaccinated as part of clinical trials before the wave of rising occurrences typically seen in late winter and spring. The exact number of people that participated in these trials was not retrieved. The vaccine was immediately licensed in distributed in March 1967 following these clinical trials. The overlap of the change and reduction in the mean following the clinical trials and the introduction of the vaccine to the public suggests that the vaccine did indeed reduce the occurrences of mumps.
+
+Note that the estimated mean of the process is 437, which lies between the two different means. 
+
+## Forecasting 1973-1974
+
+Using the previously fitted SARIMA(2,0,0)x(1,0,1)[12] model, predictions for the 24 months following the series are calculated. Below we can see the plotted forecasts up to June 1974 with error bounds. The predictions mimic the seasonal behavior seen in the time series. We also see a smaller amplitude in the predictions compared to earlier years. The process converges to a mean of 437, which is higher than the mean of 263 calculated for the post-vaccine era by the changepoint package. Predictions could be improved to reflect the reducing effect of the vaccine.      
+
+
+```{r}
+PreVacF <- rep(0,24)
+PostVacF <- rep(1,24)
+cos.DF <- cos(2*pi*w*(n+1):(n+24)) 
+sin.DF <- sin(2*pi*w*(n+1):(n+24))  
+DmatrixForecast <- cbind(cos.DF*PreVacF, sin.DF*PreVacF, cos.DF*PostVacF, sin.DF*PostVacF)
+
+fit.forecasts <- sarima.for(ts.mumps,n.ahead=24,p=2,d=0,q=0, P=1, Q=1, S=12, xreg=Dmatrix, 
+                            newxreg=DmatrixForecast, no.constant=F,plot.all=T) 
+```
+
+## Summary Conclusions
+
+There is an evident seasonal pattern in the data that reveals higher numbers of mumps occurrences in late winter and early spring months. Additionally, we saw numbers decreasing in the later years included in the time series. After fitting a SARIMA(2,0,0)x(1,0,1)[12] with exogenous variables, a decrease in amplitude was determined in observations following the introduction of a vaccine. A reduction in the mean was also ascertained following clinical trials and the distribution of the vaccine to the public, which indicates that the vaccine does prevent mumps.
+
+The SARIMA model used is able to capture the seasonal behavior of the data, but additional post-vaccine data would be helpful in capturing the decrease in occurrences following the introduction of a vaccine for forecasts. 

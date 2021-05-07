@@ -1,0 +1,130 @@
+---
+title: "Cases of Mumps In New York City"
+author: "Isis Ramirez"
+date: "4/16/2019"
+output: ioslides_presentation
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(astsa)
+library(xts)
+library(ggplot2)
+library(gridExtra)
+library(forecast)
+library(knitr)
+library(kableExtra)
+library(changepoint)
+require(quantmod)
+require(timeSeries)
+```
+
+## Background and Key Questions
+
+We will be looking at a time series dataset on the monthly count of mumps cases in New York City from 1928-1972.
+
+The following questions will be addressed:   
+
+- Is there a temporal pattern to mumps occurrences?
+   
+- Is the vaccine effective at preventing mumps?
+
+
+## Data: Definition, Acquisition and Exploration    
+
+The time series plot of the data shows periodic oscillations.
+```{r}
+## Load Data & Format ##
+mumps <- read.csv("mumps_data.csv", header = TRUE)
+ts.mumps <- ts(mumps[,2], start=c(1928,1), end=c(1972,6), frequency=12)
+
+## Plot Data & Decomposition
+autoplot(ts.mumps, ylab="Number of mumps Cases", 
+         main="Reported Mumps Cases in New York City")
+```
+
+## Seasonality   
+
+There are higher numbers of occurrences in late winter and early spring. 
+```{r}
+seasonplot(ts.mumps, year.labels=TRUE, col= 1:16, ylab="Number of Mumps Cases")
+```
+
+
+## Modeling Cases of Mumps   
+
+The acf shows periodic behavior. 
+```{r}
+invisible(acf2(ts.mumps))
+```
+
+## Modeling Cases of Mumps   
+
+Below are the results for a SARIMA(2,0,0)x(1,0,1)[12] with exogenous variables using trigonometric functions.
+$$\small x_{t}=A[I_{pre}cos(\frac{2\pi t}{12}+\phi_{1})]+B[I_{post}cos(\frac{2\pi t}{12}+\phi_{2})]$$ 
+```{r, fig.height= 3}
+n <- length(ts.mumps)
+t <- 1:length(ts.mumps)
+w <- 1/12
+
+PreVac <- as.numeric(time(ts.mumps)<1967)
+PostVac <- as.numeric(time(ts.mumps)>1967)
+
+cos.D <- cos(2*pi*w*t) 
+sin.D <- sin(2*pi*w*t) 
+Dmatrix <- cbind(cos.D*PreVac, sin.D*PreVac, cos.D*PostVac, sin.D*PostVac)
+
+fit <- invisible(astsa::sarima(ts.mumps, p=2,d=0,q=0, P=1, Q=1, S=12, 
+                        xreg=Dmatrix, no.constant=FALSE,details=F))
+ttable <- round(fit$ttable[,-3],2)
+rowNames <- c("ar1","ar2","sar1","sma1","intercept","PreV1","Prev2","PostV3","PostV4") 
+rownames(ttable) <- rowNames
+param <- kable(ttable, type='latex')
+
+B1.PreV <- fit$ttable[6,1]
+B2.PreV <- fit$ttable[7,1]
+B1.PostV <- fit$ttable[8,1]
+B2.PostV <- fit$ttable[9,1]
+
+amp1 <- sqrt(B1.PreV^2+B2.PreV^2)
+amp2 <- sqrt(B1.PostV^2+B2.PostV^2)
+
+amplitudes <- as.data.frame(c(round(amp1,2), round(amp2,2)))
+rowNames <- c("Pre-Vaccine (A)", "Post-Vaccine (B)")
+rownames(amplitudes) <- rowNames
+colNames <- c("Amplitudes")
+colnames(amplitudes) <- colNames
+amps <- kable(amplitudes, type='latex')
+
+grid.arrange(tableGrob(ttable), tableGrob(amplitudes), ncol = 2)
+
+```
+
+
+## Change in Mean   
+
+The changepoint package determined a change in mean.   
+The estimated mean of the process is 437.   
+```{r}
+mvalue <-  cpt.mean(ts.mumps)
+changePoint <- cpts(mvalue)
+changeDate <- as.yearmon(time(ts.mumps))[changePoint]
+
+m1 <- round(mvalue@param.est$mean[1],0)
+m2 <- round(mvalue@param.est$mean[2],0)
+
+plot(mvalue, ylab="Number of Mumps Cases")
+abline(v=time(ts.mumps)[changePoint], lty=2)
+text(time(ts.mumps)[changePoint]+1, 750, labels = changeDate,  srt=45, col="blue")
+text(1928, m1+60, labels = m1, col="blue")
+text(1973, m2+60, labels = m2, col="blue")
+```
+
+
+## Summary Conclusions
+
+- The time series presents periodic behavior.
+
+- Higher occurrences in late winter and spring.
+
+- Decreased amplitude and mean after the introduction of the vaccine.
